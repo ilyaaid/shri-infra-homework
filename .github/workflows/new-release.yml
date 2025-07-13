@@ -135,5 +135,4 @@ jobs:
           ${{ steps.changelog.outputs.commits }}
 
           EOF
-          )" \
-            --label release
+          )"
