@@ -1,0 +1,31 @@
+on:
+  workflow_call:
+    inputs:
+      branch:
+        description: 'Branch to test'
+        required: false
+        type: string
+
+jobs:
+  lint_test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        command: ['lint', 'test']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch || github.ref }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install packages
+        run: npm ci
+
+      - name: Run ${{ matrix.command }}
+        run: npm run ${{ matrix.command }}

@@ -1,0 +1,123 @@
+name: Fix Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Release version (e.g., 12)'
+        required: true
+        type: string
+
+env:
+  REGISTRY_ID: ${{ secrets.YANDEX_REGISTRY_ID }}
+  OAUTH_TOKEN: ${{ secrets.YANDEX_OAUTH_TOKEN }}
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  lint-test:
+    uses: ./.github/workflows/lint-test.yml
+    with:
+      branch: release/${{ github.event.inputs.release_version }}
+
+  docker:
+    needs: lint-test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+        with:
+          ref: release/${{ github.event.inputs.release_version }}
+          fetch-depth: 0
+
+      - name: Set version and tags
+        id: vars
+        run: |
+          VERSION=${{ github.event.inputs.release_version }}
+          FIX_TAG=${VERSION}_fix${{ github.run_number }}
+          LATEST_TAG=${VERSION}_latest
+          echo "fix_tag=$FIX_TAG" >> $GITHUB_OUTPUT
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+
+      - name: Docker build and push
+        run: |
+          docker build -t cr.yandex/${{ env.REGISTRY_ID }}/app:${{ steps.vars.outputs.fix_tag }} -t cr.yandex/${{ env.REGISTRY_ID }}/app:${{ steps.vars.outputs.latest_tag }} .
+          echo "${{ env.OAUTH_TOKEN }}" | docker login --username oauth --password-stdin cr.yandex
+          docker push cr.yandex/${{ env.REGISTRY_ID }}/app:${{ steps.vars.outputs.fix_tag }}
+          docker push cr.yandex/${{ env.REGISTRY_ID }}/app:${{ steps.vars.outputs.latest_tag }}
+
+      - name: Tag fix release
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          TAG=v${{ github.event.inputs.release_version }}-fix${{ github.run_number }}
+          git tag -a "$TAG" -m "Fix release $TAG"
+          git push origin "$TAG"
+
+      - name: Add comment to release issue
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const version = "${{ github.event.inputs.release_version }}";
+            const fixTag = `${version}_fix${{ github.run_number }}`;
+            const dockerImage = `cr.yandex/${{ env.REGISTRY_ID }}/app:${fixTag}`;
+            const titleToFind = `Release v${version}`;
+
+            const searchResult = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:issue in:title "${titleToFind}"`
+            });
+
+            if (searchResult.data.items.length === 0) {
+              throw new Error(`Issue с заголовком "${titleToFind}" не найден`);
+            }
+
+            const issue = searchResult.data.items[0];
+            const issueNumber = issue.number;
+
+            const { execSync } = require('child_process');
+            let prevTagRaw = '';
+            let commits = '';
+
+            try {
+              const currentTag = `v${version}-fix${{ github.run_number }}`;
+
+            prevTagRaw = execSync(`
+            git tag --sort=-creatordate \
+            | grep "^v${version}" \
+            | grep -v "${currentTag}" \
+            | head -n 1
+            `).toString().trim();
+            } catch {
+              prevTagRaw = '(не найден предыдущий релиз)';
+            }
+
+            try {
+              commits = execSync(`git log ${prevTagRaw}..HEAD --oneline`).toString().trim();
+            } catch {
+              commits = '*Не удалось получить список коммитов*';
+            }
+
+            const commentBody = `🛠️ **Фикс-релиз создан**
+            - **Дата**: ${new Date().toISOString()}
+            - **Автор**: @${{ github.actor }}
+            - **Версия**: \`${fixTag}\`
+            - **Docker-образ**: \`${dockerImage}\`
+
+            **Изменения с предыдущего релиза (\`${prevTagRaw}\`):**
+            \`\`\`
+            ${commits || 'Нет изменений'}
+            \`\`\`
+            `;
+
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: commentBody
+              });
+              console.log("Комментарий успешно добавлен в issue #" + issueNumber);
+            } catch (error) {
+              console.error("Ошибка при добавлении комментария в issue:", error.message);
+              throw error;
+            }

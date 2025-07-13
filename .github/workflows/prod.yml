@@ -1,0 +1,81 @@
+name: Release to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Номер версии релиза (например, 123)'
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY_ID: ${{ secrets.YANDEX_REGISTRY_ID }}
+      OAUTH_TOKEN: ${{ secrets.YANDEX_OAUTH_TOKEN }}
+      SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSH_USER: aleldm
+      SSH_HOST: 89.169.147.254
+
+    steps:
+      - name: Подключение по SSH и запуск контейнера
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ env.SSH_HOST }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ env.SSH_KEY }}
+          script: |
+            curl --header Metadata-Flavor:Google 169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token | \
+            cut -f1 -d',' | \
+            cut -f2 -d':' | \
+            tr -d '"' | \
+            docker login --username iam --password-stdin cr.yandex
+
+            sudo usermod -aG docker $USER
+            newgrp docker
+            export REGISTRY_ID=${{ env.REGISTRY_ID }}
+            docker pull cr.yandex/${REGISTRY_ID}/app:${{ github.event.inputs.release_version }}_latest
+            docker stop app || true
+            docker rm app || true
+            docker run -d --name app -p 3000:3000 cr.yandex/${REGISTRY_ID}/app:${{ github.event.inputs.release_version }}_latest
+
+      - name: Добавление комментария в релизный Issue
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const version = "${{ github.event.inputs.release_version }}";
+            const host = process.env.SSH_HOST;
+            const titleToFind = `Release v${version}`;
+
+            const searchResult = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:issue in:title "${titleToFind}"`
+            });
+
+            if (searchResult.data.items.length === 0) {
+              throw new Error(`Issue с заголовком "${titleToFind}" не найден`);
+            }
+
+            const issue = searchResult.data.items[0];
+            const issueNumber = issue.number;
+
+            const commentBody = `🚀 **Прод релиз выкачан**
+            - **Дата**: ${new Date().toISOString()}
+            - **Выкатил**: @${{ github.actor }}
+            - **Версия**: v${version}
+
+            Сайт доступен по ссылке: http://${host}:3000/hw/store
+            `;
+
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: commentBody
+              });
+              console.log("Комментарий добавлен в issue #" + issueNumber);
+            } catch (error) {
+              console.error("Ошибка при добавлении комментария в issue:", error.message);
+              throw error;
+            }

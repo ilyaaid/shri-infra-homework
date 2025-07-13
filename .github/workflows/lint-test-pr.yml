@@ -1,0 +1,10 @@
+name: Run lint and test on PR
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, edited, reopened]
+
+jobs:
+  lint_test:
+    uses: ./.github/workflows/lint-test.yml
