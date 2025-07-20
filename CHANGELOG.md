@@ -1,3 +1,6 @@
+## v6 - 2025-07-20
+- 504ff1d Merge pull request #7 from ilyaaid/release/5 (Yaroslav Mikhaylov)
+
 ## v5 - 2025-07-19
 - 810cedf Merge pull request #5 from ilyaaid/Vlashex-patch-1 (PR test) (Vlashex)
 - d8a8b10 Update README.md (Vlashex)
